@@ -1,340 +1,325 @@
 import streamlit as st
 import pickle
 import pandas as pd
+import requests
+import ast
+from rapidfuzz import process
 
-st.set_page_config(
-    page_title="CineMatch | Movie Recommender",
-    page_icon="🎬",
-    layout="wide"
-)
+st.set_page_config(page_title="CineMatch", page_icon="🎬", layout="wide")
 
+TMDB_API_KEY = "fd8a58e039731f7020c05ce9c3e22797"
+TMDB_BASE    = "https://api.themoviedb.org/3"
+IMG_BASE     = "https://image.tmdb.org/t/p/w500"
+
+# ── Load ───────────────────────────────────────────────────────────────────────
+@st.cache_resource
+def load_artifacts():
+    with open("movie_list.pkl", "rb") as f:
+        data = pickle.load(f)
+    with open("similarity.pkl", "rb") as f:
+        sim = pickle.load(f)
+    df = data if isinstance(data, pd.DataFrame) else pd.DataFrame(data)
+    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+    return df, sim
+
+movies, similarity = load_artifacts()
+col_title = "title" if "title" in movies.columns else movies.columns[1]
+
+# ── TMDB ───────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600)
+def tmdb_search(title):
+    try:
+        r = requests.get(f"{TMDB_BASE}/search/movie",
+                         params={"api_key": TMDB_API_KEY, "query": title}, timeout=8)
+        res = r.json().get("results", [])
+        return res[0] if res else None
+    except: return None
+
+@st.cache_data(ttl=3600)
+def tmdb_details(tid):
+    try:
+        r = requests.get(f"{TMDB_BASE}/movie/{tid}",
+                         params={"api_key": TMDB_API_KEY, "append_to_response": "videos"}, timeout=8)
+        return r.json()
+    except: return {}
+
+def get_poster(path):
+    return IMG_BASE + path if path else None
+
+def get_trailer(details):
+    for v in details.get("videos", {}).get("results", []):
+        if v.get("type") == "Trailer" and v.get("site") == "YouTube":
+            return v["key"]
+    return None
+
+def fmt_money(val):
+    try:
+        v = int(val)
+        if v == 0: return "N/A"
+        if v >= 1_000_000_000: return f"${v/1e9:.1f}B"
+        if v >= 1_000_000: return f"${v/1e6:.1f}M"
+        return f"${v:,}"
+    except: return "N/A"
+
+def fmt_year(val):
+    try: return str(pd.to_datetime(val).year)
+    except: return "N/A"
+
+# ── Recommend ──────────────────────────────────────────────────────────────────
+def recommend(title, n=5):
+    titles = movies[col_title].tolist()
+    match  = process.extractOne(title, titles, score_cutoff=60)
+    if not match: return []
+    idx = movies[movies[col_title] == match[0]].index[0]
+    dists = sorted(enumerate(similarity[idx]), key=lambda x: x[1], reverse=True)[1:n+1]
+    return [movies.iloc[i][col_title] for i, _ in dists]
+
+# ── CSS ────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-header {visibility: hidden;}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+*, body, .stApp { font-family:'Inter',sans-serif; }
+.stApp { background: linear-gradient(135deg,#0a0a0f,#0d1117,#0a0f1e); color:#e2e8f0; }
 
-html, body, [class*="css"] {
-    font-family: "Segoe UI", sans-serif;
-}
+.hero { text-align:center; padding:2.5rem 1rem 1.5rem;
+  background:linear-gradient(180deg,rgba(99,102,241,.12),transparent);
+  border-bottom:1px solid rgba(99,102,241,.2); margin-bottom:1.5rem; }
+.hero h1 { font-size:2.8rem; font-weight:800; margin:0; }
+.hero h1 span { background:linear-gradient(135deg,#6366f1,#a78bfa,#ec4899);
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.hero p { color:#94a3b8; margin-top:.3rem; }
 
-.stApp {
-    background:
-        radial-gradient(circle at top left, rgba(244, 114, 182, 0.18), transparent 28%),
-        radial-gradient(circle at top right, rgba(59, 130, 246, 0.18), transparent 25%),
-        radial-gradient(circle at bottom left, rgba(16, 185, 129, 0.15), transparent 24%),
-        linear-gradient(135deg, #070b16 0%, #0f172a 45%, #111827 100%);
-    color: #f8fafc;
-}
+.metric-row { display:flex; gap:.8rem; justify-content:center; margin-bottom:1.5rem; flex-wrap:wrap; }
+.mc { background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08);
+  border-radius:12px; padding:1rem 1.8rem; text-align:center; min-width:120px; }
+.mc .v { font-size:1.6rem; font-weight:700; color:#a78bfa; }
+.mc .l { font-size:.7rem; color:#64748b; text-transform:uppercase; letter-spacing:.08em; }
 
-.block-container {
-    padding-top: 2rem;
-    padding-bottom: 2rem;
-    max-width: 1200px;
-}
+.glass { background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08);
+  border-radius:16px; padding:1.5rem; margin-bottom:1.2rem; }
 
-.hero-wrap {
-    padding: 1.5rem 0 1rem 0;
-}
+.sh { font-size:1.05rem; font-weight:600; color:#e2e8f0; margin-bottom:.8rem;
+  display:flex; align-items:center; gap:.5rem; }
+.sh::after { content:''; flex:1; height:1px; background:rgba(255,255,255,.08); }
 
-.badge {
-    display: inline-block;
-    padding: 0.4rem 0.85rem;
-    border-radius: 999px;
-    background: rgba(255,255,255,0.08);
-    border: 1px solid rgba(255,255,255,0.10);
-    color: #f9a8d4;
-    font-size: 0.85rem;
-    font-weight: 700;
-    margin-bottom: 1rem;
-}
+.dt { font-size:1.5rem; font-weight:700; color:#f1f5f9; margin:0 0 .2rem; }
+.tg { color:#94a3b8; font-style:italic; font-size:.88rem; margin-bottom:.7rem; }
+.badge { display:inline-block; background:rgba(99,102,241,.2);
+  border:1px solid rgba(99,102,241,.35); color:#a78bfa;
+  border-radius:20px; padding:.15rem .65rem; font-size:.7rem; margin:.1rem; }
+.ir { display:flex; gap:1.5rem; margin:.7rem 0; flex-wrap:wrap; }
+.ii .l { font-size:.65rem; color:#64748b; text-transform:uppercase; }
+.ii .v { font-size:.9rem; font-weight:600; color:#e2e8f0; }
+.ov { color:#cbd5e1; line-height:1.7; font-size:.88rem; margin-top:.5rem; }
 
-.hero-title {
-    font-size: 3.4rem;
-    line-height: 1.05;
-    font-weight: 850;
-    color: #ffffff;
-    margin-bottom: 0.6rem;
-    letter-spacing: -0.03em;
-}
+.rc { background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08);
+  border-radius:12px; overflow:hidden; transition:transform .2s,border-color .2s; }
+.rc:hover { transform:translateY(-3px); border-color:rgba(99,102,241,.5); }
+.rc img { width:100%; height:220px; object-fit:cover; display:block; }
+.rc .np { width:100%; height:220px; background:rgba(99,102,241,.08);
+  display:flex; align-items:center; justify-content:center;
+  color:#475569; font-size:.75rem; text-align:center; }
+.rc .rt { padding:.45rem .5rem; font-size:.75rem; font-weight:600;
+  color:#e2e8f0; text-align:center; line-height:1.3; }
+.rc .ry { font-size:.65rem; color:#64748b; text-align:center; padding-bottom:.45rem; }
 
-.hero-title span {
-    background: linear-gradient(90deg, #60a5fa, #a78bfa, #f472b6);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-}
-
-.hero-subtitle {
-    font-size: 1.08rem;
-    color: #cbd5e1;
-    max-width: 760px;
-    line-height: 1.7;
-    margin-bottom: 1.5rem;
-}
-
-.glass-card {
-    background: rgba(15, 23, 42, 0.62);
-    border: 1px solid rgba(255,255,255,0.10);
-    border-radius: 22px;
-    padding: 1.25rem;
-    box-shadow: 0 12px 40px rgba(0,0,0,0.22);
-    backdrop-filter: blur(16px);
-}
-
-.metric-card {
-    background: linear-gradient(180deg, rgba(30,41,59,0.9), rgba(15,23,42,0.75));
-    border: 1px solid rgba(148,163,184,0.14);
-    border-radius: 22px;
-    padding: 1.3rem 1rem;
-    text-align: center;
-    box-shadow: 0 12px 28px rgba(0,0,0,0.18);
-}
-
-.metric-number {
-    font-size: 2rem;
-    font-weight: 850;
-    color: #ffffff;
-    margin-bottom: 0.2rem;
-}
-
-.metric-label {
-    font-size: 0.98rem;
-    color: #94a3b8;
-    font-weight: 600;
-}
-
-.section-heading {
-    font-size: 1.9rem;
-    font-weight: 800;
-    color: #ffffff;
-    margin: 1.6rem 0 0.9rem 0;
-    letter-spacing: -0.02em;
-}
-
-.muted-text {
-    color: #cbd5e1;
-    line-height: 1.8;
-    font-size: 1rem;
-}
-
-.result-card {
-    position: relative;
-    overflow: hidden;
-    background:
-        linear-gradient(180deg, rgba(15,23,42,0.95), rgba(17,24,39,0.88));
-    border: 1px solid rgba(255,255,255,0.10);
-    border-radius: 24px;
-    padding: 1.15rem;
-    min-height: 250px;
-    box-shadow: 0 16px 34px rgba(0,0,0,0.22);
-    margin-bottom: 1rem;
-}
-
-.result-card::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(135deg, rgba(96,165,250,0.08), rgba(244,114,182,0.06), rgba(16,185,129,0.06));
-    pointer-events: none;
-}
-
-.rank-chip {
-    position: relative;
-    z-index: 1;
-    display: inline-block;
-    padding: 0.38rem 0.78rem;
-    border-radius: 999px;
-    background: rgba(59,130,246,0.18);
-    color: #bfdbfe;
-    font-size: 0.8rem;
-    font-weight: 700;
-    margin-bottom: 0.9rem;
-}
-
-.movie-title {
-    position: relative;
-    z-index: 1;
-    color: #ffffff;
-    font-size: 1.18rem;
-    font-weight: 800;
-    line-height: 1.4;
-    margin-bottom: 0.75rem;
-}
-
-.movie-desc {
-    position: relative;
-    z-index: 1;
-    color: #dbe4f0;
-    font-size: 0.96rem;
-    line-height: 1.7;
-}
-
-.stButton > button {
-    background: linear-gradient(90deg, #ec4899, #8b5cf6, #3b82f6) !important;
-    color: white !important;
-    border: none !important;
-    border-radius: 14px !important;
-    padding: 0.8rem 1.4rem !important;
-    font-size: 1rem !important;
-    font-weight: 800 !important;
-    box-shadow: 0 10px 24px rgba(139,92,246,0.28) !important;
-}
-
-.stButton > button:hover,
-.stButton > button:focus,
-.stButton > button:active {
-    color: white !important;
-    border: none !important;
-    box-shadow: 0 0 0 0.2rem rgba(168,85,247,0.25) !important;
-}
-
-/* Keep Streamlit widgets readable instead of forcing custom popup colors */
-label {
-    color: #e2e8f0 !important;
-    font-weight: 650 !important;
-}
-
-.stSlider label,
-.stSelectbox label {
-    color: #e2e8f0 !important;
-}
-
-/* Sidebar hidden look on page */
-hr {
-    border-color: rgba(255,255,255,0.08);
-}
-
-@media (max-width: 768px) {
-    .hero-title {
-        font-size: 2.4rem;
-    }
-    .section-heading {
-        font-size: 1.5rem;
-    }
-}
+.stButton>button { background:linear-gradient(135deg,#6366f1,#a78bfa) !important;
+  color:white !important; border:none !important; border-radius:10px !important; font-weight:600 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-@st.cache_data
-def load_data():
-    movie_dict = pickle.load(open("movie_list.pkl", "rb"))
-    similarity = pickle.load(open("similarity.pkl", "rb"))
-    movies = pd.DataFrame(movie_dict)
-    return movies, similarity
+# ── Hero ───────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="hero">
+  <h1>🎬 <span>CineMatch</span></h1>
+  <p>AI-powered content-based movie recommendation engine</p>
+</div>""", unsafe_allow_html=True)
 
-movies, similarity = load_data()
-def make_snippet(row):
-    overview = str(row.get("overview", "")).strip()
+# ── Metrics ────────────────────────────────────────────────────────────────────
+total = len(movies)
+gc = 20
+if "genres" in movies.columns:
+    try:
+        ag = set()
+        for g in movies["genres"].dropna():
+            items = ast.literal_eval(g) if isinstance(g, str) else g
+            if isinstance(items, list):
+                for i in items:
+                    n = i if isinstance(i, str) else i.get("name","")
+                    if n: ag.add(n)
+        gc = len(ag)
+    except: gc = 20
 
-    if overview and overview.lower() != "nan":
-        words = overview.split()
-        short_text = " ".join(words[:25])
-        if len(words) > 25:
-            short_text += "..."
-        return short_text
+st.markdown(f"""
+<div class="metric-row">
+  <div class="mc"><div class="v">{total:,}</div><div class="l">Movies</div></div>
+  <div class="mc"><div class="v">{gc}</div><div class="l">Genres</div></div>
+  <div class="mc"><div class="v">NLP</div><div class="l">Engine</div></div>
+  <div class="mc"><div class="v">CosSim</div><div class="l">Algorithm</div></div>
+</div>""", unsafe_allow_html=True)
 
-    return "Description not available."
-def recommend(movie_title, top_k=5):
-    movie_index = movies[movies["title"] == movie_title].index[0]
-    distances = similarity[movie_index]
-
-    movie_list_sorted = sorted(
-        list(enumerate(distances)),
-        key=lambda x: x[1],
-        reverse=True
-    )[1: top_k + 1]
-
-    results = []
-    for rank, (idx, score) in enumerate(movie_list_sorted, start=1):
-        row = movies.iloc[idx]
-
-        results.append({
-            "rank": rank,
-            "movie_id": row["movie_id"],
-            "title": row["title"],
-            "overview": row.get("overview", ""),
-            "similarity": float(score)
-        })
-
-    return results
-st.markdown('<div class="hero-wrap">', unsafe_allow_html=True)
-
-st.markdown('<div class="hero-title">Discover your next <span>favorite movie</span></div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="hero-subtitle">CineMatch is a content-based recommendation system that uses NLP, feature engineering, and cosine similarity to suggest movies based on storyline, genre, cast, and crew similarities.</div>',
-    unsafe_allow_html=True
-)
+# ── Controls ───────────────────────────────────────────────────────────────────
+st.markdown('<div class="glass">', unsafe_allow_html=True)
+st.markdown('<div class="sh">🔍 Find Your Next Movie</div>', unsafe_allow_html=True)
+c1, c2, c3 = st.columns([3, 1, 1])
+with c1:
+    sel = st.selectbox("Movie", sorted(movies[col_title].dropna().unique()), label_visibility="collapsed")
+with c2:
+    num = st.slider("N", 1, 15, 5, label_visibility="collapsed")
+with c3:
+    go  = st.button("✨ Recommend", use_container_width=True, type="primary")
 st.markdown('</div>', unsafe_allow_html=True)
 
-m1, m2, m3 = st.columns(3)
-with m1:
-    st.markdown(
-        f'<div class="metric-card"><div class="metric-number">{movies.shape[0]}</div><div class="metric-label">Movies in dataset</div></div>',
-        unsafe_allow_html=True
-    )
-with m2:
-    st.markdown(
-        '<div class="metric-card"><div class="metric-number">NLP</div><div class="metric-label">Feature engineering pipeline</div></div>',
-        unsafe_allow_html=True
-    )
-with m3:
-    st.markdown(
-        '<div class="metric-card"><div class="metric-number">ML</div><div class="metric-label">Cosine similarity engine</div></div>',
-        unsafe_allow_html=True
-    )
-
-st.markdown('<div class="section-heading">Find similar movies</div>', unsafe_allow_html=True)
-
-left, right = st.columns([1.15, 0.85])
-
-with left:
-    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-    selected_movie_name = st.selectbox(
-        "Select a movie",
-        sorted(movies["title"].values)
-    )
-    top_k = st.slider(
-        "Number of recommendations",
-        min_value=3,
-        max_value=10,
-        value=5
-    )
-    go = st.button("Recommend Movies")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with right:
-    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-    st.markdown('<div class="section-heading" style="font-size:1.4rem; margin-top:0;">Model pipeline</div>', unsafe_allow_html=True)
-    st.markdown(
-        """
-        <div class="muted-text">
-        • Combined overview, genres, keywords, cast, and crew into a unified tag field.<br>
-        • Applied stemming and text preprocessing using NLTK.<br>
-        • Converted textual content into vectors using CountVectorizer.<br>
-        • Ranked nearest movies using cosine similarity.
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
 if go:
-    results = recommend(selected_movie_name, top_k=top_k)
+    st.session_state["movie"] = sel
+    st.session_state["n"]     = num
 
-    st.markdown('<div class="section-heading">Recommended for you</div>', unsafe_allow_html=True)
+if "movie" in st.session_state:
+    mt = st.session_state["movie"]
+    n  = st.session_state.get("n", 5)
 
-    rows = [results[i:i+5] for i in range(0, len(results), 5)]
+    with st.spinner("Fetching details..."):
+        res  = tmdb_search(mt)
+        det  = tmdb_details(res["id"]) if res else {}
 
-    for row_movies in rows:
-        cols = st.columns(len(row_movies))
-        for col, movie in zip(cols, row_movies):
-            with col:
-                st.markdown(
-                    f"""
-                    <div class="result-card">
-                        <div class="rank-chip">Rank #{movie['rank']}</div>
-                        <div class="movie-title">{movie['title']}</div>
-                        <div class="movie-desc">{make_snippet(movie)}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+    poster      = get_poster(res.get("poster_path") if res else None)
+    tagline     = det.get("tagline", "")
+    overview    = det.get("overview", "")
+    trailer_key = get_trailer(det)
+    budget      = fmt_money(det.get("budget", 0))
+    revenue     = fmt_money(det.get("revenue", 0))
+    rt          = det.get("runtime")
+    runtime     = f"{rt} min" if rt else "N/A"
+    rv          = det.get("vote_average")
+    rating      = f"{rv:.1f} ⭐" if isinstance(rv, (int, float)) else "N/A"
+
+    yr = "N/A"
+    if res and res.get("release_date"): yr = res["release_date"][:4]
+    elif "release_date" in movies.columns:
+        row = movies[movies[col_title] == mt]
+        if not row.empty: yr = fmt_year(row.iloc[0].get("release_date",""))
+
+    gl = [g["name"] for g in det.get("genres", [])]
+    if not gl and "genres" in movies.columns:
+        row = movies[movies[col_title] == mt]
+        if not row.empty:
+            raw = row.iloc[0].get("genres","[]")
+            try:
+                items = ast.literal_eval(raw) if isinstance(raw, str) else raw
+                gl = [i if isinstance(i,str) else i.get("name","") for i in items]
+            except: pass
+
+    if not overview and "overview" in movies.columns:
+        row = movies[movies[col_title] == mt]
+        if not row.empty:
+            overview = str(row.iloc[0].get("overview","")).strip()
+    if not overview:
+        overview = "Description not available."
+
+    gh = "".join(f'<span class="badge">{g}</span>' for g in gl) or '<span class="badge">N/A</span>'
+
+    # ── Detail Panel ───────────────────────────────────────────────────────────
+    st.markdown('<div class="sh">🎥 Movie Details</div>', unsafe_allow_html=True)
+    st.markdown('<div class="glass">', unsafe_allow_html=True)
+    cp, ci = st.columns([1, 3])
+
+    with cp:
+        if poster:
+            st.image(poster, use_container_width=True)
+        else:
+            st.markdown('<div style="height:320px;background:rgba(99,102,241,.1);border-radius:12px;display:flex;align-items:center;justify-content:center;color:#475569;">🎬 No Poster</div>', unsafe_allow_html=True)
+
+    with ci:
+        st.markdown(f"""
+        <div class="dt">{mt} ({yr})</div>
+        <div class="tg">{tagline or "No tagline available"}</div>
+        <div style="margin-bottom:.5rem;">{gh}</div>
+        <div class="ir">
+          <div class="ii"><div class="l">Rating</div><div class="v">{rating}</div></div>
+                    <div class="ii"><div class="l">Runtime</div><div class="v">{runtime}</div></div>
+          <div class="ii"><div class="l">Budget</div><div class="v">{budget}</div></div>
+          <div class="ii"><div class="l">Box Office</div><div class="v">{revenue}</div></div>
+        </div>
+        <div class="ov">{overview}</div>
+        """, unsafe_allow_html=True)
+
+        if trailer_key:
+            st.markdown(
+                f'<a href="https://www.youtube.com/watch?v={trailer_key}" target="_blank">'
+                f'<button style="margin-top:1rem;background:linear-gradient(135deg,#ef4444,#dc2626);'
+                f'color:white;border:none;border-radius:10px;padding:.5rem 1.4rem;'
+                f'font-weight:600;cursor:pointer;font-size:.85rem;">▶ Watch Trailer</button></a>',
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown('<p style="color:#64748b;margin-top:.8rem;font-size:.8rem;">🎬 Trailer not available</p>', unsafe_allow_html=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── Recommendations ────────────────────────────────────────────────────────
+    st.markdown('<div class="sh">🍿 Recommended For You</div>', unsafe_allow_html=True)
+
+    rec_titles = recommend(mt, n)
+
+    if not rec_titles:
+        st.warning("No recommendations found. Try a different movie.")
+    else:
+        with st.spinner("Loading recommendations..."):
+            rec_data = []
+            for title in rec_titles:
+                r2     = tmdb_search(title)
+                poster2 = get_poster(r2.get("poster_path") if r2 else None)
+                year2   = r2["release_date"][:4] if r2 and r2.get("release_date") else "N/A"
+                rec_data.append({"title": title, "poster": poster2, "year": year2})
+
+        cols_per_row = min(5, len(rec_data))
+        rows = [rec_data[i:i+cols_per_row] for i in range(0, len(rec_data), cols_per_row)]
+
+        for row in rows:
+            cols = st.columns(len(row))
+            for col, mov in zip(cols, row):
+                with col:
+                    if mov["poster"]:
+                        st.markdown(f"""
+                        <div class="rc">
+                          <img src="{mov['poster']}" alt="{mov['title']}"/>
+                          <div class="rt">{mov['title']}</div>
+                          <div class="ry">{mov['year']}</div>
+                        </div>""", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"""
+                        <div class="rc">
+                          <div class="np">🎬<br>{mov['title']}</div>
+                          <div class="rt">{mov['title']}</div>
+                          <div class="ry">{mov['year']}</div>
+                        </div>""", unsafe_allow_html=True)
+
+    # ── How It Works ───────────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="sh">⚙️ How It Works</div>', unsafe_allow_html=True)
+    st.markdown('<div class="glass">', unsafe_allow_html=True)
+
+    p1, p2, p3, p4 = st.columns(4)
+    steps = [
+        ("📥", "Data Ingestion",  "TMDB 5000 movies & credits merged and cleaned"),
+        ("🔤", "NLP Processing",  "Tags from genres, cast, crew, keywords & overview"),
+        ("📊", "Vectorization",   "CountVectorizer converts tags to feature vectors"),
+        ("🎯", "Similarity",      "Cosine similarity ranks the closest movies"),
+    ]
+    for col, (icon, title, desc) in zip([p1, p2, p3, p4], steps):
+        with col:
+            st.markdown(f"""
+            <div style="text-align:center;padding:.8rem;">
+              <div style="font-size:1.8rem;">{icon}</div>
+              <div style="font-weight:600;color:#a78bfa;margin:.3rem 0 .2rem;font-size:.88rem;">{title}</div>
+              <div style="font-size:.73rem;color:#64748b;line-height:1.5;">{desc}</div>
+            </div>""", unsafe_allow_html=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ── Footer ─────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div style="text-align:center;padding:1.5rem;color:#334155;font-size:.75rem;
+border-top:1px solid rgba(255,255,255,.06);margin-top:1.5rem;">
+  CineMatch &nbsp;|&nbsp; Built with Streamlit &amp; TMDB API &nbsp;|&nbsp; Content-Based Filtering
+</div>""", unsafe_allow_html=True)
