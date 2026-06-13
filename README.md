@@ -31,6 +31,42 @@ A movie recommendation system that suggests similar movies using Machine Learnin
 
 ---
 
+## 📸 Screenshots
+
+### Home Page
+
+<p align="center">
+  <img width="90%" src="https://github.com/user-attachments/assets/1dc486ab-6d33-42d5-815e-e57bfbcab79a" />
+
+</p>
+
+*Main dashboard showing movie search, recommendation controls, and project statistics.*
+
+### Movie Details
+
+<p align="center">
+  <img width="90%" src="https://github.com/user-attachments/assets/cb6ae49c-a5a4-4b2f-a749-027b010842a5" />
+</p>
+
+*Detailed movie information including poster, genres, ratings, runtime, overview, and trailer.*
+
+### Cast & Crew
+
+<p align="center">
+  <img width="90%" src="https://github.com/user-attachments/assets/2bf61d79-f8aa-4744-9c6f-5fb1954a44c1" />
+</p>
+
+*Cast and crew section with actor profiles and production details fetched using the TMDB API.*
+
+### Recommendations
+
+<p align="center">
+  <img width="90%" src="https://github.com/user-attachments/assets/d5d927b5-1970-4b57-bcb1-2bbad6a86ed7" />
+</p>
+
+*Recommended movies generated using content-based similarity and NLP processing.*
+
+
 ## 🚀 Installation
 
 ### 1. Clone the Repository
