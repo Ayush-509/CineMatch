@@ -3,77 +3,15 @@ import pickle
 import pandas as pd
 import requests
 import ast
-import os
-import nltk
-from nltk.stem.porter import PorterStemmer
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 from rapidfuzz import process
-
-nltk.download('punkt', quiet=True)
 
 st.set_page_config(page_title="CineMatch", page_icon="🎬", layout="wide")
 
-TMDB_API_KEY = st.secrets.get("TMDB_API_KEY", "")
+TMDB_API_KEY = "fd8a58e039731f7020c05ce9c3e22797"
 TMDB_BASE    = "https://api.themoviedb.org/3"
 IMG_BASE     = "https://image.tmdb.org/t/p/w500"
 IMG_SMALL    = "https://image.tmdb.org/t/p/w185"
 
-
-def generate_pickles():
-    movies = pd.read_csv('tmdb_5000_movies.csv')
-    credits = pd.read_csv('tmdb_5000_credits.csv')
-
-    movies = movies.merge(credits, on='title')
-    movies = movies[['movie_id', 'title', 'overview', 'genres', 'keywords',
-                     'cast', 'crew', 'release_date', 'budget', 'revenue',
-                     'tagline', 'runtime']]
-    movies.dropna(inplace=True)
-
-    def convert(obj):
-        return [i['name'] for i in ast.literal_eval(obj)]
-
-    def convert3(obj):
-        return [i['name'] for i in ast.literal_eval(obj)[:3]]
-
-    def fetch_director(obj):
-        return [i['name'] for i in ast.literal_eval(obj) if i['job'] == 'Director']
-
-    movies['genres']   = movies['genres'].apply(convert)
-    movies['keywords'] = movies['keywords'].apply(convert)
-    movies['cast']     = movies['cast'].apply(convert3)
-    movies['crew']     = movies['crew'].apply(fetch_director)
-    movies['overview'] = movies['overview'].apply(lambda x: x.split())
-
-    for col in ['genres', 'keywords', 'cast', 'crew']:
-        movies[col] = movies[col].apply(lambda x: [i.replace(" ", "") for i in x])
-
-    movies['tags'] = (movies['overview'] + movies['genres'] +
-                      movies['keywords'] + movies['cast'] + movies['crew'])
-
-    new_df = movies[['movie_id', 'title', 'tags', 'release_date',
-                     'budget', 'revenue', 'tagline', 'runtime', 'genres']].copy()
-    new_df['tags'] = new_df['tags'].apply(lambda x: " ".join(x).lower())
-
-    ps = PorterStemmer()
-    new_df['tags'] = new_df['tags'].apply(
-        lambda x: " ".join([ps.stem(w) for w in x.split()])
-    )
-
-    cv = CountVectorizer(max_features=5000, stop_words='english')
-    vectors = cv.fit_transform(new_df['tags']).toarray()
-    similarity = cosine_similarity(vectors)
-
-    pickle.dump(new_df,     open('movie_list.pkl', 'wb'))
-    pickle.dump(similarity, open('similarity.pkl', 'wb'))
-
-
-# Auto-generate if pickles are missing
-if not os.path.exists('movie_list.pkl') or not os.path.exists('similarity.pkl'):
-    with st.spinner("⚙️ Setting up for the first time... (~30 seconds)"):
-        generate_pickles()
-
-        
 @st.cache_resource
 def load_artifacts():
     with open("movie_list.pkl", "rb") as f:
@@ -117,7 +55,8 @@ def get_trailer(details):
 
 def fmt_money(val):
     try:
-        v = int(val)
+        if pd.isna(val) or val == "" or str(val).lower() == "nan": return "N/A"
+        v = int(float(val))
         if v == 0: return "N/A"
         if v >= 1_000_000_000: return f"${v/1e9:.1f}B"
         if v >= 1_000_000: return f"${v/1e6:.1f}M"
@@ -132,19 +71,65 @@ def recommend(title, n=5):
     return [movies.iloc[i][col_title] for i, _ in dists]
 
 def build_movie_data(title):
+    # 1. Gather API Search and Detail Info (Primarily for dynamic asset/credits media)
     res = tmdb_search(title)
     det = tmdb_details(res["id"]) if res else {}
+    
     poster      = get_poster(res.get("poster_path") if res else None)
-    backdrop    = get_poster(res.get("backdrop_path") if res else None,
-                             "https://image.tmdb.org/t/p/w1280")
-    tagline     = det.get("tagline", "")
-    overview    = det.get("overview", "")
+    backdrop    = get_poster(res.get("backdrop_path") if res else None, "https://image.tmdb.org/t/p/w1280")
     trailer_key = get_trailer(det)
-    rt          = det.get("runtime")
-    rv          = det.get("vote_average")
-    vc          = det.get("vote_count", 0)
-    gl          = [g["name"] for g in det.get("genres", [])]
 
+    # 2. Extract matching movie row from local CSV
+    row = movies[movies[col_title] == title]
+    has_local = not row.empty
+    
+    # 3. Pull Data directly from your dataset row layout
+    gl = []
+    if has_local and "genres" in movies.columns:
+        local_genres = row.iloc[0].get("genres", "")
+        if pd.notna(local_genres) and local_genres:
+            try:
+                parsed_genres = ast.literal_eval(str(local_genres))
+                if isinstance(parsed_genres, list):
+                    gl = [str(g) for g in parsed_genres]
+            except:
+                gl = [g.strip() for g in str(local_genres).replace("[","").replace("]","").replace("'","").replace('"',"").split(",") if g.strip()]
+    
+    if not gl:
+        gl = [g["name"] for g in det.get("genres", [])]
+
+    # Map directly to local dataset columns
+    budget_raw  = row.iloc[0].get("budget", 0) if has_local else det.get("budget", 0)
+    revenue_raw = row.iloc[0].get("revenue", 0) if has_local else det.get("revenue", 0)
+    tagline     = row.iloc[0].get("tagline", "") if has_local else det.get("tagline", "")
+    overview    = row.iloc[0].get("overview", "") if has_local else det.get("overview", "")
+    runtime_raw = row.iloc[0].get("runtime", None) if has_local else det.get("runtime")
+    
+    # Local assignments for rating metrics
+    rv = row.iloc[0].get("vote_average", "N/A") if has_local else det.get("vote_average", "N/A")
+    vc = row.iloc[0].get("vote_count", 0) if has_local else det.get("vote_count", 0)
+    
+    if has_local and "release_date" in movies.columns:
+        local_date = str(row.iloc[0].get("release_date", ""))
+        yr = local_date[:4] if len(local_date) >= 4 and local_date.lower() != "nan" else "N/A"
+    else:
+        yr = res["release_date"][:4] if res and res.get("release_date") else "N/A"
+
+    if pd.isna(tagline) or str(tagline).lower() == "nan": tagline = ""
+    if pd.isna(overview) or str(overview).lower() == "nan": overview = "No description available."
+
+    # Format numeric entries for rating UI layouts safely
+    try:
+        rating_fmt = f"{float(rv):.1f}" if pd.notna(rv) and str(rv).lower() != "nan" else "N/A"
+    except:
+        rating_fmt = "N/A"
+
+    try:
+        votes_fmt = f"{int(float(vc)):,}" if pd.notna(vc) and vc != "" else "N/A"
+    except:
+        votes_fmt = "N/A"
+
+    # 4. Process live Cast and Crew credits through API
     cast = []
     for p in det.get("credits", {}).get("cast", [])[:10]:
         cast.append({
@@ -163,20 +148,12 @@ def build_movie_data(title):
             seen.add(name)
             crew.append({"name": name, "job": job})
 
-    yr = res["release_date"][:4] if res and res.get("release_date") else "N/A"
-
-    if not overview:
-        row = movies[movies[col_title] == title]
-        if not row.empty:
-            overview = str(row.iloc[0].get("overview", "")).strip() or "No description available."
-
     return dict(title=title, poster=poster, backdrop=backdrop, tagline=tagline,
                 overview=overview, trailer_key=trailer_key,
-                budget=fmt_money(det.get("budget", 0)),
-                revenue=fmt_money(det.get("revenue", 0)),
-                runtime=f"{rt} min" if rt else "N/A",
-                rating=f"{rv:.1f}" if isinstance(rv, (int, float)) else "N/A",
-                votes=f"{vc:,}" if vc else "N/A",
+                budget=fmt_money(budget_raw),
+                revenue=fmt_money(revenue_raw),
+                runtime=f"{int(float(runtime_raw))} min" if pd.notna(runtime_raw) and runtime_raw != "" else "N/A",
+                rating=rating_fmt, votes=votes_fmt,
                 year=yr, genres=gl, cast=cast, crew=crew)
 
 # ── Session state ─────────────────────────────────────────────────────────────
@@ -312,11 +289,10 @@ if "genres" in movies.columns:
     try:
         ag = set()
         for g in movies["genres"].dropna():
-            items = ast.literal_eval(g) if isinstance(g, str) else g
+            items = ast.literal_eval(str(g)) if isinstance(g, str) else g
             if isinstance(items, list):
-                for i in items:
-                    n = i if isinstance(i, str) else i.get("name","")
-                    if n: ag.add(n)
+                for n in items:
+                    if n: ag.add(str(n))
         gc = len(ag)
     except: gc = 20
 
@@ -399,14 +375,12 @@ if st.session_state.selected:
         </div>
         <div class="ov" style="margin-bottom: 1.2rem;">{md['overview']}</div>""", unsafe_allow_html=True)
 
-
         if md["trailer_key"]:
             st.markdown('<div style="font-size:0.78rem; font-weight:700; color:#a78bfa; margin-bottom:0.4rem; text-transform:uppercase; letter-spacing:0.05em;">▶ Official Trailer Preview</div>', unsafe_allow_html=True)
             video_col, _ = st.columns([1.0, 2.0])
             with video_col:
                 st.video(f"https://www.youtube.com/watch?v={md['trailer_key']}")
                 
-
     st.markdown('</div>', unsafe_allow_html=True)
 
     # ── Cast ──────────────────────────────────────────────────────────────────
